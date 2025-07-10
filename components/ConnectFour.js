@@ -1,8 +1,45 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { Audio } from 'expo-av';
 
 const ConnectFour = ({ gameState, onMove, playerRole, isComputerMode }) => {
   const { board, turn } = gameState;
+  const [winner, setWinner] = useState(null);
+  const [moveSound, setMoveSound] = useState(null);
+  const [winSound, setWinSound] = useState(null);
+
+  // Load sound files
+  useEffect(() => {
+    const loadSounds = async () => {
+      try {
+        const moveSoundObj = new Audio.Sound();
+        await moveSoundObj.loadAsync(require('../assets/sounds/move.mp3'));
+        setMoveSound(moveSoundObj);
+
+        const winSoundObj = new Audio.Sound();
+        await winSoundObj.loadAsync(require('../assets/sounds/win.mp3'));
+        setWinSound(winSoundObj);
+      } catch (error) {
+        console.log('Failed to load sounds', error);
+      }
+    };
+
+    loadSounds();
+
+    return () => {
+      if (moveSound) moveSound.unloadAsync();
+      if (winSound) winSound.unloadAsync();
+    };
+  }, []);
+
+  // Reset winner when gameState.board changes to initial state
+  useEffect(() => {
+    // Check if the board is in its initial state (all null)
+    const isInitialBoard = board.every(row => row.every(cell => cell === null));
+    if (isInitialBoard) {
+      setWinner(null);
+    }
+  }, [board]);
 
   const checkWinner = (board) => {
     // Check horizontal
@@ -61,10 +98,10 @@ const ConnectFour = ({ gameState, onMove, playerRole, isComputerMode }) => {
       }
     }
 
-    return board[0].every(cell => cell) ? 'Draw' : null;
+    return board[0].every(cell => cell !== null) ? 'Draw' : null;
   };
 
-  const makeComputerMove = () => {
+  const makeComputerMove = async () => {
     if (!isComputerMode || turn === playerRole || checkWinner(board)) return;
 
     const opponent = playerRole === 'R' ? 'Y' : 'R';
@@ -134,18 +171,39 @@ const ConnectFour = ({ gameState, onMove, playerRole, isComputerMode }) => {
     }
 
     if (move !== -1) {
+      if (moveSound) {
+        try {
+          await moveSound.replayAsync();
+        } catch (error) {
+          console.log('Failed to play move sound', error);
+        }
+      }
       onMove({ ...gameState, board: newBoard, turn: playerRole });
     }
   };
 
   useEffect(() => {
     if (isComputerMode && turn !== playerRole) {
-      const timer = setTimeout(makeComputerMove, 500); // Delay for natural feel
+      const timer = setTimeout(() => {
+        makeComputerMove();
+      }, 500);
       return () => clearTimeout(timer);
     }
-  }, [turn, isComputerMode]);
+  }, [turn, isComputerMode, moveSound]);
 
-  const handlePress = (col) => {
+  useEffect(() => {
+    const currentWinner = checkWinner(board);
+    if (currentWinner && currentWinner !== winner && currentWinner !== 'Draw') {
+      setWinner(currentWinner);
+      if (winSound) {
+        winSound.replayAsync().catch((error) => {
+          console.log('Failed to play win sound', error);
+        });
+      }
+    }
+  }, [board, winSound]);
+
+  const handlePress = async (col) => {
     if (checkWinner(board) || turn !== playerRole) return;
 
     let row = -1;
@@ -157,13 +215,19 @@ const ConnectFour = ({ gameState, onMove, playerRole, isComputerMode }) => {
     }
     if (row === -1) return;
 
+    if (moveSound) {
+      try {
+        await moveSound.replayAsync();
+      } catch (error) {
+        console.log('Failed to play move sound', error);
+      }
+    }
+
     const newBoard = board.map(row => [...row]);
     newBoard[row][col] = turn;
     const nextTurn = turn === 'R' ? 'Y' : 'R';
     onMove({ ...gameState, board: newBoard, turn: nextTurn });
   };
-
-  const winner = checkWinner(board);
 
   return (
     <View style={styles.container}>
@@ -221,6 +285,7 @@ const ConnectFour = ({ gameState, onMove, playerRole, isComputerMode }) => {
   );
 };
 
+// Styles 
 const styles = StyleSheet.create({
   container: {
     alignItems: 'center',
