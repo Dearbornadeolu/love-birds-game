@@ -1,66 +1,190 @@
-import React, { useState } from 'react';
-import { View, TextInput, TouchableOpacity, Text, StyleSheet, ScrollView } from 'react-native';
-import io from 'socket.io-client';
+import React, { useState, useEffect } from 'react';
+import { View, TextInput, TouchableOpacity, Text, StyleSheet, ScrollView, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const socket = io('http://172.20.10.9:3000'); // Replace with your server URL
 
 export default function HomeScreen({ navigation }) {
   const [roomCode, setRoomCode] = useState('');
+  const [username, setUsername] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [createdRoomCode, setCreatedRoomCode] = useState(null);
+  const [ws, setWs] = useState(null);
+
+  useEffect(() => {
+    const loadUsername = async () => {
+      const storedUsername = await AsyncStorage.getItem('username');
+      if (storedUsername) setUsername(storedUsername);
+    };
+    loadUsername();
+
+    const websocket = new WebSocket('http://172.20.10.9:3003');
+    setWs(websocket);
+
+    websocket.onopen = () => {
+      console.log('Connected to WebSocket server');
+    };
+
+    websocket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      console.log('Received:', data);
+
+      switch (data.type) {
+        case 'room_created':
+          setIsLoading(false);
+          setCreatedRoomCode(data.roomId);
+          navigation.navigate('Game', {
+            roomCode: data.roomId,
+            isHost: true,
+            username,
+            playerId: data.playerId,
+            playerNumber: data.playerNumber,
+          });
+          break;
+        case 'room_joined':
+          setIsLoading(false);
+          navigation.navigate('Game', {
+            roomCode: data.roomId,
+            isHost: false,
+            username,
+            playerId: data.playerId,
+            playerNumber: data.playerNumber,
+            players: data.players,
+            gameState: data.gameState,
+          });
+          break;
+        case 'error':
+          setIsLoading(false);
+          setError(data.message);
+          break;
+      }
+    };
+
+    websocket.onclose = () => {
+      console.log('Disconnected from WebSocket server');
+      setWs(null);
+      setError('Disconnected from server');
+    };
+
+    websocket.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      setIsLoading(false);
+      setError('Connection error. Please try again.');
+    };
+
+    return () => {
+      websocket.close();
+    };
+  }, [navigation, username]);
 
   const createRoom = async () => {
-    setIsLoading(true);
-    setError('');
-    const sessionId = await AsyncStorage.getItem('sessionId') || Math.random().toString();
-    await AsyncStorage.setItem('sessionId', sessionId);
-    socket.emit('create-room');
-    socket.on('room-created', (code) => {
-      setIsLoading(false);
-      navigation.navigate('Game', { roomCode: code, isHost: true });
-    });
-  };
-
-  const joinRoom = () => {
-    if (!roomCode.trim()) {
-      setError('Please enter a room code');
+    if (!username.trim()) {
+      setError('Please enter a username');
+      return;
+    }
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setError('Not connected to server');
       return;
     }
     setIsLoading(true);
     setError('');
-    socket.emit('join-room', roomCode);
-    socket.on('start-game', () => {
-      setIsLoading(false);
-      navigation.navigate('Game', { roomCode, isHost: false });
-    });
-    socket.on('error', (msg) => {
-      setIsLoading(false);
-      setError(msg);
-    });
+    await AsyncStorage.setItem('username', username.trim());
+    ws.send(JSON.stringify({
+      type: 'create_room',
+      username: username.trim(),
+      game: 'connect4',
+    }));
+  };
+
+  const joinRoom = async () => {
+    if (!username.trim()) {
+      setError('Please enter a username');
+      return;
+    }
+    if (!roomCode.trim()) {
+      setError('Please enter a room code');
+      return;
+    }
+    if (roomCode === createdRoomCode) {
+      setError('You cannot join your own room');
+      return;
+    }
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setError('Not connected to server');
+      return;
+    }
+    setIsLoading(true);
+    setError('');
+    await AsyncStorage.setItem('username', username.trim());
+    ws.send(JSON.stringify({
+      type: 'join_room',
+      roomId: roomCode.trim().toUpperCase(),
+      username: username.trim(),
+    }));
+  };
+
+  const handleLogout = async () => {
+    Alert.alert(
+      'Logout',
+      'Are you sure you want to log out? This will clear your username and disconnect you.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Logout',
+          style: 'destructive',
+          onPress: async () => {
+            await AsyncStorage.removeItem('username');
+            setUsername('');
+            setRoomCode('');
+            setCreatedRoomCode(null);
+            setError('');
+            if (ws) ws.close();
+          },
+        },
+      ]
+    );
   };
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>🎮 Game Hub</Text>
-        <Text style={styles.subtitle}>Play games with friends online</Text>
+        <Text style={styles.subtitle}>Play Connect Four with friends online</Text>
       </View>
 
       <View style={styles.cardContainer}>
         <View style={styles.card}>
+          <Text style={styles.cardTitle}>👤 Username</Text>
+          <TextInput
+            placeholder="Enter Your Username"
+            value={username}
+            onChangeText={(text) => {
+              setUsername(text);
+              setError('');
+            }}
+            style={styles.input}
+            placeholderTextColor="#7f8c8d"
+            maxLength={20}
+            autoCapitalize="none"
+          />
+          {username.trim() && (
+            <TouchableOpacity
+              style={[styles.button, styles.logoutButton]}
+              onPress={handleLogout}
+            >
+              <Text style={[styles.buttonText, styles.logoutButtonText]}>🚪 Logout</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        <View style={styles.card}>
           <Text style={styles.cardTitle}>🚀 Create New Room</Text>
-          <Text style={styles.cardDescription}>
-            Start a new game room and invite friends to join
-          </Text>
-          <TouchableOpacity 
-            style={[styles.button, styles.primaryButton]} 
+          <Text style={styles.cardDescription}>Start a new Connect Four game and invite friends</Text>
+          <TouchableOpacity
+            style={[styles.button, styles.primaryButton, isLoading && styles.disabledButton]}
             onPress={createRoom}
             disabled={isLoading}
           >
-            <Text style={styles.buttonText}>
-              {isLoading ? 'Creating...' : 'Create Game Room'}
-            </Text>
+            <Text style={styles.buttonText}>{isLoading ? 'Creating...' : 'Create Game Room'}</Text>
           </TouchableOpacity>
         </View>
 
@@ -72,9 +196,7 @@ export default function HomeScreen({ navigation }) {
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>🎯 Join Existing Room</Text>
-          <Text style={styles.cardDescription}>
-            Enter a room code to join an existing game
-          </Text>
+          <Text style={styles.cardDescription}>Enter a room code to join a game</Text>
           <TextInput
             placeholder="Enter Room Code"
             value={roomCode}
@@ -87,8 +209,8 @@ export default function HomeScreen({ navigation }) {
             maxLength={6}
             autoCapitalize="characters"
           />
-          <TouchableOpacity 
-            style={[styles.button, styles.secondaryButton]} 
+          <TouchableOpacity
+            style={[styles.button, styles.secondaryButton, (isLoading || !roomCode.trim()) && styles.disabledButton]}
             onPress={joinRoom}
             disabled={isLoading || !roomCode.trim()}
           >
@@ -98,17 +220,15 @@ export default function HomeScreen({ navigation }) {
           </TouchableOpacity>
         </View>
 
-        {error ? (
+        {error && (
           <View style={styles.errorContainer}>
             <Text style={styles.errorText}>❌ {error}</Text>
           </View>
-        ) : null}
+        )}
       </View>
 
       <View style={styles.footer}>
-        <Text style={styles.footerText}>
-          Connect with friends and enjoy multiplayer games!
-        </Text>
+        <Text style={styles.footerText}>Connect with friends and enjoy multiplayer games!</Text>
       </View>
     </ScrollView>
   );
@@ -202,6 +322,13 @@ const styles = StyleSheet.create({
   },
   secondaryButtonText: {
     color: '#3498db',
+  },
+  logoutButton: {
+    backgroundColor: '#e74c3c',
+    marginTop: 10,
+  },
+  logoutButtonText: {
+    color: '#ffffff',
   },
   divider: {
     flexDirection: 'row',
